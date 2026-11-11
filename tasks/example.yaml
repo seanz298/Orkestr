@@ -1,0 +1,18 @@
+# 任务文件示例。放在 tasks/ 目录下，用 `orkestr submit /tasks/example.yaml` 提交。
+title: 修复 parse_date 对两位数年份的处理
+description: |
+  utils/dates.py 里的 parse_date("3/4/99") 返回了公元 99 年。
+  两位数年份应按 1970-2069 的窗口解释。
+repo: my-project            # `orkestr add-repo <url>` 时得到的名字
+base_branch: main
+test_command: python -m pytest -q
+acceptance_criteria:
+  - parse_date("3/4/99") 的年份是 1999
+  - parse_date("3/4/25") 的年份是 2025
+  - 现有测试全部通过
+# Agent 不许改的路径。建议把你亲自写的验收测试放在这里。
+protected_paths:
+  - tests/acceptance/*
+budget_usd: 2.0             # 超出后任务停在 BUDGET_EXCEEDED
+max_repair_rounds: 3
+use_moa: false              # true = 先让多个模型各自出方案再综合

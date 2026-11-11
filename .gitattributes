@@ -1,0 +1,3 @@
+# Files are copied into a Linux container: keep LF even when cloned on Windows.
+* text=auto eol=lf
+*.bat text eol=crlf

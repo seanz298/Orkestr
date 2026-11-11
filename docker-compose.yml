@@ -1,0 +1,19 @@
+services:
+  orchestrator:
+    build: .
+    image: orkestr:local
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      # Repos, worktrees and the task database live in a Docker volume,
+      # not on the Windows filesystem (faster, and no CRLF surprises).
+      - workspace:/workspace
+      - ./config.yaml:/app/config.yaml:ro
+      - ./tasks:/tasks:ro
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  workspace:

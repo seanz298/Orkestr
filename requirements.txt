@@ -1,0 +1,13 @@
+# Orchestrator core
+pydantic>=2
+pyyaml
+httpx
+
+# Agent harnesses (versions not pinned: pin them after your first working build
+# with `docker compose exec orchestrator pip freeze`)
+deepagents
+langchain-deepseek
+claude-agent-sdk
+
+# Handy for the quality gate of Python target repos
+pytest

@@ -1,0 +1,45 @@
+# Orkestr 配置。${VAR} 会被 .env 里的同名变量替换。
+
+# 谁负责什么。值是下面 agents 里的名字；写 null 表示关闭该角色。
+roles:
+  planner: codex        # 项目经理：只读分析仓库，出实施计划（失败不影响任务继续）
+  developer: deepseek   # 主力开发
+  reviewer: claude      # 审核：只读
+  repairer: deepseek    # 按门禁/审核意见修复
+  escalation: codex     # 最后一轮修复换人；null 则一直用 repairer
+
+agents:
+  deepseek:
+    type: deepagents                      # Deep Agents Harness
+    model: "deepseek:${DEEPSEEK_MODEL}"   # LangChain 的 provider:model 写法
+    env_keys: [DEEPSEEK_API_KEY]          # 该 Agent 进程唯一能看到的密钥
+    price_in: 0                           # 美元 / 百万输入 token；填官网现价才会计入预算
+    price_out: 0
+  codex:
+    type: codex                           # Codex 原生 Harness（codex exec）
+    model: "${CODEX_MODEL}"               # 留空 = Codex 默认模型
+    env_keys: [OPENAI_API_KEY]
+    sandbox_write: workspace-write        # 容器里若沙箱报错，改成 danger-full-access
+    sandbox_read: read-only
+    price_in: 0
+    price_out: 0
+  claude:
+    type: claude                          # Claude Agent SDK（费用由 SDK 直接返回）
+    model: "${CLAUDE_MODEL}"
+    env_keys: [ANTHROPIC_API_KEY]
+
+limits:
+  max_turns: 60           # 单次 Agent 调用的最大轮数
+  agent_timeout_s: 1800   # 单次 Agent 调用的硬超时，到时整个进程组被杀
+
+# MoA：任务文件里写 use_moa: true 时才启动。model 为空的提案者自动跳过。
+moa:
+  proposers:
+    - {name: deepseek, kind: openai_compatible, base_url: "https://api.deepseek.com",
+       model: "${DEEPSEEK_MODEL}", key_env: DEEPSEEK_API_KEY, price_in: 0, price_out: 0}
+    - {name: claude, kind: anthropic, model: "${CLAUDE_MODEL}",
+       key_env: ANTHROPIC_API_KEY, price_in: 0, price_out: 0}
+    - {name: openai, kind: openai_compatible, base_url: "https://api.openai.com/v1",
+       model: "${OPENAI_MODEL}", key_env: OPENAI_API_KEY, price_in: 0, price_out: 0}
+  aggregator: {name: claude, kind: anthropic, model: "${CLAUDE_MODEL}",
+               key_env: ANTHROPIC_API_KEY, price_in: 0, price_out: 0}
