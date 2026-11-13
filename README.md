@@ -26,7 +26,7 @@ AWAITING_APPROVAL → 你批准后才合并
 
 | 部分 | 状态 |
 | --- | --- |
-| Orchestrator 核心：队列、状态、预算、worktree、质量门禁、修复循环、只读强制、审批合并、MoA 流程 | **已测试**（9 个自动化测试 + `selftest`，用脚本化的假 Agent） |
+| Orchestrator 核心：队列、状态、预算、worktree、质量门禁、修复循环、只读强制、审批合并、MoA 流程、记忆接口 | **已测试**（14 个自动化测试 + `selftest`，用脚本化的假 Agent） |
 | Claude 适配器 | 接口已对照 claude-agent-sdk 0.2.172 核对；**未做真实调用** |
 | Codex 适配器（`codex exec`） | 按官方文档编写，**未运行过** |
 | DeepSeek 适配器（Deep Agents） | 按官方文档编写，**未运行过** |
@@ -99,6 +99,19 @@ orkestr retry <任务号>      从头重跑
 - **硬上限**：每次调用有轮数上限和超时（到时杀掉整个进程组），每个任务有预算上限。
 - **不自动发布**：`approve` 只做本地合并，push 永远是你手动做。
 
+## 记忆接口（ALM 接入点）
+
+`orchestrator/memory.py` 定义了记忆系统与流水线之间的全部契约，默认实现 `NullMemory` 不做任何事。
+
+- 开工前 `get_context(spec)`：返回最多 3 条提示，**只发给规划者**（planner 或 MoA）；没有规划者时不调用。
+- 收工后 `record_outcome(outcome)`：任务每次运行结束时调用一次，内容全部来自事件日志。
+- 失败任务在预算允许时由审核角色做一次只读的事后归因；预算不够则记 `postmortem_skipped`。
+- 记忆系统抛异常不会让任务失败，只记 `memory_failed` 事件；它的花费计入任务预算。
+
+接入方式：构造 `Pipeline(..., memory=你的实现)`。目前还没有配置项，`cli.py` 里用的是默认的 `NullMemory`。
+
+注意：`record_outcome` 发生在流水线结束时，成功任务的状态是 `AWAITING_APPROVAL`。你之后的 `approve` / `reject` 目前不会通知记忆系统。
+
 ## 已知限制
 
 1. **预算统计默认不完整**。Claude 的费用由 SDK 返回，是准的；DeepSeek 和 Codex 的费用靠 `config.yaml` 里的 `price_in / price_out` 乘以 token 数，默认是 0。不填单价，预算就只算 Claude 的花费。请按官网现价填写。
@@ -125,6 +138,7 @@ orchestrator/
   gate.py         质量门禁与密钥清洗
   workspace.py    Git worktree 隔离与合并
   moa.py          按需启动的多模型方案综合
+  memory.py       记忆接口（ALM 接入点）
   store.py        SQLite 任务与事件日志
   cli.py          命令行
   selftest.py     离线端到端自测

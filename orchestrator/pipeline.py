@@ -11,6 +11,8 @@ from .agents.base import Agent
 from .config import Config
 from .contract import AgentRequest, Delivery, GateReport, TaskSpec
 from .gate import run_gate
+from .memory import (MAX_HINTS, POSTMORTEM_SYSTEM, Memory, MemoryContext, NullMemory,
+                     outcome_from_events, parse_attribution)
 from .moa import ChatFn, chat, run_moa
 from .store import Store
 from .workspace import Workspace
@@ -65,9 +67,11 @@ def task_text(spec: TaskSpec) -> str:
 
 class Pipeline:
     def __init__(self, cfg: Config, store: Store, ws: Workspace,
-                 agents: Dict[str, Agent], chat_fn: ChatFn = chat):
+                 agents: Dict[str, Agent], chat_fn: ChatFn = chat,
+                 memory: Optional[Memory] = None):
         self.cfg, self.store, self.ws = cfg, store, ws
         self.agents, self.chat_fn = agents, chat_fn
+        self.memory: Memory = memory or NullMemory()
 
     # -- helpers ---------------------------------------------------------
     def _check_budget(self, tid: str, spec: TaskSpec) -> None:
@@ -102,22 +106,60 @@ class Pipeline:
     def _plan(self, tid: str, spec: TaskSpec, wt: Path) -> Optional[str]:
         """Planning is best-effort: a failed plan never fails the task."""
         self.store.set_state(tid, C.PLANNING)
+        planner = self.cfg.roles.planner
+        # Hints go to planners only. With nobody to read them, memory is not asked.
+        hints = self._memory_hints(tid, spec) if (spec.use_moa or planner) else ""
         if spec.use_moa:
             self._check_budget(tid, spec)
             try:
-                text = task_text(spec) + "\n## Repository files\n" + self.ws.file_list(wt)
+                text = (task_text(spec) + hints
+                        + "\n## Repository files\n" + self.ws.file_list(wt))
                 plan, cost, notes = run_moa(self.cfg.moa, text, self.chat_fn)
                 self.store.add_cost(tid, cost)
                 self.store.event(tid, "moa", {"cost_usd": cost, "proposers": notes, "plan": plan})
                 return plan
             except Exception as exc:  # noqa: BLE001
                 self.store.event(tid, "moa_failed", {"error": repr(exc)})
-        planner = self.cfg.roles.planner
         if planner:
-            d = self._call(tid, spec, planner, "planner", task_text(spec), PLAN_SYSTEM, wt, True)
+            d = self._call(tid, spec, planner, "planner", task_text(spec) + hints,
+                           PLAN_SYSTEM, wt, True)
             if d.success and d.summary.strip():
                 return d.summary
         return None
+
+    # -- memory ----------------------------------------------------------
+    def _memory_hints(self, tid: str, spec: TaskSpec) -> str:
+        """Rendered hints for the planner. Memory errors mean 'no hints'."""
+        try:
+            ctx = self.memory.get_context(spec)
+        except Exception as exc:  # noqa: BLE001
+            self.store.event(tid, "memory_failed", {"where": "get_context", "error": repr(exc)})
+            ctx = MemoryContext()
+        ctx.hints = ctx.hints[:MAX_HINTS]
+        self.store.add_cost(tid, ctx.cost_usd)
+        self.store.event(tid, "memory_context", ctx.model_dump())
+        return ctx.render()
+
+    def _postmortem(self, tid: str, spec: TaskSpec, wt: Path, feedback: str) -> None:
+        """Read-only failure attribution. Skipped when the budget is gone; never
+        changes the task's outcome."""
+        try:
+            prompt = (task_text(spec) + "\n## Feedback on the final attempt\n" + feedback
+                      + "\n\n## Final diff\n```diff\n" + self.ws.diff(wt, spec.base_branch)
+                      + "\n```\n")
+            d = self._call(tid, spec, self.cfg.roles.reviewer, "postmortem",
+                           prompt, POSTMORTEM_SYSTEM, wt, True)
+            if d.success:
+                self.store.event(tid, "attribution", parse_attribution(d.summary).model_dump())
+        except Exception as exc:  # noqa: BLE001 - includes BudgetExceeded
+            self.store.event(tid, "postmortem_skipped", {"reason": repr(exc)})
+
+    def _record_outcome(self, tid: str, spec: TaskSpec) -> None:
+        try:
+            self.memory.record_outcome(
+                outcome_from_events(spec, self.store.get(tid), self.store.events(tid)))
+        except Exception as exc:  # noqa: BLE001
+            self.store.event(tid, "memory_failed", {"where": "record_outcome", "error": repr(exc)})
 
     # -- main ------------------------------------------------------------
     def run_task(self, tid: str) -> str:
@@ -128,6 +170,7 @@ class Pipeline:
             self.store.set_state(tid, C.BUDGET_EXCEEDED, str(exc))
         except Exception as exc:  # noqa: BLE001
             self.store.set_state(tid, C.FAILED, repr(exc))
+        self._record_outcome(tid, spec)
         return self.store.get(tid)["state"]
 
     def _run(self, tid: str, spec: TaskSpec) -> None:
@@ -178,6 +221,7 @@ class Pipeline:
                 self.store.set_state(tid, C.FAILED, f"repairer failed: {d.error}")
                 return
 
+        self._postmortem(tid, spec, wt, feedback)
         self.store.set_state(tid, C.FAILED,
                              f"not accepted after {spec.max_repair_rounds} repair rounds")
 
